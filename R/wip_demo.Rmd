@@ -1,0 +1,83 @@
+---
+title: "WIP Demo"
+author: "Kai Jeffreys"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Initialize Set Up
+### Load in the functions
+```{r}
+source("wip_functions.R")
+```
+
+
+### Load in files
+These files could include a DEM, training points, other rast files, or polygon files
+
+```{r}
+r <- terra::rast("PackForest/PF_DTM3.tif")
+pts <- terra::vect("PackForest/PF_trainingdata.shp")
+```
+
+# Create elevation derivatives
+We will use the `surface_met` function in order to create the elevation derivatives. In order to get it to run, one needs to input
+
+
+```{r}
+elev1 <- surface_met(r, len = 20, elev_dev = c("grad", "prof", "plan"))
+elev2 <- surface_met(r, len = 100, elev_dev = c("grad", "prof", "plan"))
+elev3 <- surface_met(r, len = 10, elev_dev = c("twi"))
+```
+
+# Build the model
+
+
+
+```{r}
+mod1 <- build_model(in_rasts = elev1, train = pts)
+mod2 <- build_model(in_rasts = c(elev1, elev2, elev3), train = pts)
+mod3 <- build_model(in_rasts = c(elev1, elev2, elev3), train = pts,
+                    model_type = "glm")
+mod4 <- build_model(in_rasts = c(elev1, elev2, elev3), train = pts,
+                    model_type = "knn", model_params = list(k = 5))
+```
+
+## Get an estimate of the error of the model
+The `CV_err` fucntions
+```{r}
+CV_err(in_rasts = elev1, train = pts)
+CV_err(in_rasts = c(elev1, elev2, elev3), train = pts)
+CV_err(in_rasts = c(elev1, elev2, elev3), train = pts,
+                    model_type = "glm")
+```
+
+
+# Run the model
+
+```{r}
+prob1 <- run_model(mod1, elev1)
+prob2 <- run_model(mod2, c(elev1, elev2, elev3))
+prob3 <- run_model(mod3, c(elev1, elev2, elev3), model_type = "glm")
+prob4 <- run_model(mod4, c(elev1, elev2, elev3), model_type = "knn")
+```
+
+## Plot the results of the model
+
+```{r}
+plot(prob1["WET"], main = "Wetlands Probability (Simple)")
+plot(prob2["WET"], main = "Wetlands Probability (Complex)")
+plot(prob3, main = "Wetlands Probability (Logistic)")
+plot(prob4["WET"],  main = "Wetlands Probability (knn)")
+```
+
+
+# Another option:
+
+```{r}
+plot(dem_to_prob(r, len = 36, train = pts))
+```
