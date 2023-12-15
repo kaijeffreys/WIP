@@ -18,7 +18,7 @@ surface_met <- function(DEM, len, export = FALSE,
     DEM <- terra::rast(DEM)
   }
   # Sets up the resolution
-  k <- round(len/res(DEM)[1])
+  k <- round(len/terra::res(DEM)[1])
   if (k %% 2 == 0) {
     k <- k + 1
   }
@@ -113,6 +113,7 @@ surface_met <- function(DEM, len, export = FALSE,
     names(in_rast)[length(in_rast)] <- paste0("twi", len)
   }
   
+  # Exports the surface metrics
   if(export) {
     for(i in 1:length(in_rast)) {
       writeRaster(in_rast[[i]],
@@ -125,42 +126,149 @@ surface_met <- function(DEM, len, export = FALSE,
 # -----------------------------------------------------------------------------
 # Build training points
 
-build_train_pts <- function() {
+build_train_pts <- function(region_poly, wet_poly, multi_class = FALSE,
+                            wet_types = c("Freshwater Forested/Shrub Wetland",
+                                          "Freshwater Emergent Wetland",
+                                          "Freshwater Pond",
+                                          "Estuarine and Marine Wetland",
+                                          "Riverine", "Lake",
+                                          "Estuarine and Marine Deepwater",
+                                          "Other"),
+                            sample_points = c(50, 150), export = FALSE) {
   
+  # Loads in polygons if input is a file name
+  if(is.character(wet_poly[[1]])) {
+    temp_poly <- list()
+    for(i in 1:length(wet_poly)) {
+      temp_poly[[i]] <- terra::vect(wet_poly) 
+    }
+    wet_poly <- temp_poly
+  }
+  
+  if(is.character(region_poly)) {
+    region_poly <- terra::vect(region_poly)
+  }
+  
+  # Filters the wetland polygons to only include wanted types
+  wet_poly <- wet_poly[wet_poly$WETLAND_TY %in% wet_types]
+  if(length(wet_poly) == 0) {
+    stop("No wetlands to sample!")
+  }
+  
+  # Cropping the wetland polygon(s) to the overall region
+  wet_poly <- terra::project(wet_poly, region_poly)
+  wet_poly <- terra::crop(wet_poly, region_poly)
+  
+  # Checks if output is supposed to be more than two classes before proceeding
+  if(multi_class) {
+    # Initialize parameters
+    train_crds <- NA
+    train_atts <- NA
+    
+    # Sample points for each wetland class
+    for(i in 1:length(wet_types)) {
+      temp_poly <- wet_poly[wet_poly$WETLAND_TY == wet_types[i]]
+      wet_crds <- NA
+
+      # Sampling points for each polygon that the wetland class is in
+      for(j in 1:length(temp_poly)) {
+        samp_wet_pts <- terra::spatSample(temp_poly, 
+                                          sample_points[1]/length(temp_poly))
+        coords <- terra::crds(samp_wet_pts)
+        wet_crds <- rbind(wet_crds, coords)
+      }
+      
+      train_crds <- rbind(train_crds, wet_crds)
+      train_atts <- rbind(train_atts, rep(wet_types[i], sample_points))
+    }
+    
+    # Sample points from non-wetland areas
+    up_poly <- terra::erase(region_poly, wet_poly)
+    samp_up_pts <- terra::spatSample(up_poly, sample_points[2])
+    up_crds <- terra::crds(samp_up_pts)
+    
+    # Create the points
+    train_crds <- rbind(train_crds, up_crds)
+    train_atts <- rbind(train_atts, rep("UPL", sample_points[2]))
+    train_atts <- data.frame(class = factor(train_atts))
+    pts <- terra::vect(train_crds, atts = train_atts,
+                       crs = terra::crs(region_poly))
+      
+  } else {
+    # Sample the wetland points
+    wet_crds <- NA
+    for(i in 1:length(wet_poly)) {
+      samp_wet_pts <- terra::spatSample(wet_poly, 
+                                        sample_points[1]/length(wet_poly))
+      coords <- terra::crds(samp_wet_pts)
+      wet_crds <- rbind(wet_crds, coords)
+    }
+    # Sample points from non-wetland areas
+    up_poly <- terra::erase(region_poly, wet_poly)
+    samp_up_pts <- terra::spatSample(up_poly, sample_points[2])
+    up_crds <- terra::crds(samp_up_pts)
+    
+    # Create the points
+    train_crds <- rbind(wet_crds, up_crds)
+    train_atts <- data.frame(class = factor(c(rep("WET", sample_points[1]),
+                                              rep("UPL", sample_points[2]))))
+    pts <- terra::vect(train_crds, atts = train_atts,
+                       crs = terra::crs(region_poly))
+  }
+  
+  # Return the points and exports them, if desired
+  if(export) {
+    terra:writeVector(pts, filename = "trainingdata.shp")
+  }
+  
+  return(pts)
 }
 
 # -----------------------------------------------------------------------------
 # Builds the model
 
-build_model <- function(in_rasts, poly_inputs = list(), train, 
+build_model <- function(in_rasts, poly_inputs = list(), train, ref_raster,
                         model_type = "forest", model_params = list(ntree = 200),
                         class_field_name = "Class") {
   
-  # Checking if inputs are file names, then load them in
-  for(i in 1:length(in_rasts)) {
-    if(is.character(in_rasts[[i]])) {
-      in_rasts[i] <- terra::rast(in_rasts[[i]])
+  # Checking if input rasters are file names, then load them in
+  if(is.character(in_rasts[1])) {
+    temp_rast <- rep(list(), length(in_rasts))
+    for(i in 1:length(in_rasts)) {
+      temp_rast[[i]] <- terra::rast(in_rasts[i])
     }
+    names(temp_rast) <- in_rasts
+    in_rasts <- temp_rast
   }
-   
+  
+  # Checks if there are any polygon inputs
   if(length(poly_inputs) > 0) {
-    for(i in 1:length(poly_inputs)) {
-      if(is.character(poly_inputs[[i]])) {
+    
+    # Checking to see the polygon inputs are filenames
+    if(is.character(poly_inputs[[1]])) {
+      temp_poly <- rep(list(), length(poly_inputs))
+      for(i in 1:length(poly_inputs)) {
         if(!file.exists(poly_inputs[[i]])) {
           stop(paste0("Cannot find poly input file:", poly_inputs[i]))
         }
-        poly_inputs[i] <- terra::vect(poly_inputs[[i]]) 
+        temp_poly[[i]] <- terra::vect(poly_inputs[i]) 
       }
+      names(temp_poly) <- poly_inputs
+      poly_inputs <- temp_poly
+    }
+    
+    #
+    for(i in 1:length(poly_inputs)) {
+      vr_name <- names(poly_inputs)[i]
+      temp_rast <- terra::rasterize(poly_inputs[i], ref_raster, field = vr_name)
+      in_rasts <- c(in_rasts, temp_rast)
     }
   }
   
-  # Changing polygons to rasters
-  if(length(poly_inputs) > 0) {
-    for(i in 1:length(poly_inputs)) {
-      vr_name <- names(poly_inputs)[i]
-      temp_rast <- terra::rasterize(poly_inputs[i], DEM, field = vr_name)
-      in_rast <- c(in_rast, temp_rast)
-    }
+  # Ensure that all inputs are covering the same area
+  for(i in 1:length(in_rasts)) {
+    in_rasts[[i]] <- terra::project(in_rasts[[i]], ref_raster)
+    in_rasts[[i]] <- terra::crop(in_rasts[[i]], ref_raster)
   }
   
   # Set up training data
@@ -197,40 +305,48 @@ build_model <- function(in_rasts, poly_inputs = list(), train,
 # -----------------------------------------------------------------------------
 # Runs the model
 
-run_model <- function(mod, in_rasts = list(), poly_inputs = list(),
-                      model_type = "forest") {
-  for(i in 1:length(in_rasts)) {
-    if(is.character(in_rasts[[i]])) {
-      if(!file.exists(in_rasts[[i]])) {
-        stop(paste0("Cannot find poly input file:", in_rasts[i]))
-      }
-      in_rasts[i] <- terra::rast(in_rasts[[i]])
+run_model <- function(mod, in_rasts = list(), poly_inputs = list(), ref_raster,
+                      model_type = "forest", export = FALSE) {
+  
+  # Checking if inputs are file names, then load them in
+  if(is.character(in_rasts[1])) {
+    temp_rast <- rep(list(), length(in_rasts))
+    for(i in 1:length(in_rasts)) {
+      temp_rast[[i]] <- terra::rast(in_rasts[i])
     }
+    names(temp_rast) <- in_rasts
+    in_rasts <- temp_rast
   }
   
   if(length(poly_inputs) > 0) {
-    for(i in 1:length(poly_inputs)) {
-      if(is.character(poly_inputs[[i]])) {
+    if(is.character(poly_inputs[[1]])) {
+      temp_poly <- rep(list(), length(poly_inputs))
+      for(i in 1:length(poly_inputs)) {
         if(!file.exists(poly_inputs[[i]])) {
           stop(paste0("Cannot find poly input file:", poly_inputs[i]))
         }
-        poly_inputs[i] <- terra::vect(poly_inputs[[i]]) 
+        temp_poly[[i]] <- terra::vect(poly_inputs[i]) 
       }
+      names(temp_poly) <- poly_inputs
+      poly_inputs <- temp_poly
     }
-  }
-  
-  if(length(poly_inputs) > 0) {
     for(i in 1:length(poly_inputs)) {
       vr_name <- names(poly_inputs)[i]
-      temp_rast <- terra::rasterize(poly_inputs[i], DEM, field = vr_name)
+      temp_rast <- terra::rasterize(poly_inputs[i], ref_raster, field = vr_name)
       in_rasts <- c(in_rasts, temp_rast)
     }
   }
   
+  # Ensure that all inputs are covering the same area
+  for(i in 1:length(in_rasts)) {
+    in_rasts[[i]] <- terra::project(in_rasts[[i]], ref_raster)
+    in_rasts[[i]] <- terra::crop(in_rasts[[i]], ref_raster)
+  }
+  
+  # Stacks the rasters on top of each other to create one raster
   input_raster <- in_rasts[[1]]
   if(length(in_rasts) > 1) {
     for(i in 2:length(in_rasts)) {
-      ext(in_rasts[[i]]) <- ext(in_rasts[[1]])
       input_raster <- c(input_raster, in_rasts[[i]])
     }
   }
@@ -242,38 +358,60 @@ run_model <- function(mod, in_rasts = list(), poly_inputs = list(),
   } else {
     prob_rast <- terra::predict(input_raster, mod, na.rm = T, type = "prob")
   }
+  
+  if(export) {
+    for(i in 1:length(prob_rast)) {
+      file_name <- paste0(names(run_fort)[i], "prob.tif")
+      terra::writeRaster(prob_rast[[i]], filename = file_name)
+    }
+  }
   return(prob_rast)
 }
 
 # -----------------------------------------------------------------------------
 # Tests model
 
-CV_err <- function(in_rasts, poly_inputs = list(), 
+CV_err <- function(in_rasts, poly_inputs = list(), ref_raster,
                    model_type = "forest", model_params = list(ntree = 200), 
                    train, kfold= 5, class_field_name = "Class") {
-  for(i in 1:length(in_rasts)) {
-    if(is.character(in_rasts[[i]])) {
-      in_rasts[i] <- terra::rast(in_rasts[[i]])
-    }
-  }
   
+  # Checking if inputs are file names, then load them in
+  if(is.character(in_rasts[1])) {
+    temp_rast <- rep(list(), length(in_rasts))
+    for(i in 1:length(in_rasts)) {
+      temp_rast[[i]] <- terra::rast(in_rasts[i])
+    }
+    names(temp_rast) <- in_rasts
+    in_rasts <- temp_rast
+  }
+
   if(length(poly_inputs) > 0) {
-    for(i in 1:length(poly_inputs)) {
-      if(is.character(poly_inputs[[i]])) {
+    if(is.character(poly_inputs[[1]])) {
+      temp_poly <- rep(list(), length(poly_inputs))
+      for(i in 1:length(poly_inputs)) {
         if(!file.exists(poly_inputs[[i]])) {
           stop(paste0("Cannot find poly input file:", poly_inputs[i]))
         }
-        poly_inputs[i] <- terra::vect(poly_inputs[[i]]) 
+        temp_poly[[i]] <- terra::vect(poly_inputs[i]) 
       }
+      names(temp_poly) <- poly_inputs
+      poly_inputs <- temp_poly
     }
   }
   
+  # Convert the polygons into rasters
   if(length(poly_inputs) > 0) {
     for(i in 1:length(poly_inputs)) {
       vr_name <- names(poly_inputs)[i]
-      temp_rast <- terra::rasterize(poly_inputs[i], DEM, field = vr_name)
-      in_rast <- c(in_rast, temp_rast)
+      temp_rast <- terra::rasterize(poly_inputs[i], ref_raster, field = vr_name)
+      in_rasts <- c(in_rasts, temp_rast)
     }
+  }
+  
+  # Ensure that all inputs are covering the same area
+  for(i in 1:length(in_rasts)) {
+    in_rasts[[i]] <- terra::project(in_rasts[[i]], ref_raster)
+    in_rasts[[i]] <- terra::crop(in_rasts[[i]], ref_raster)
   }
   
   # Set up training data
@@ -334,11 +472,28 @@ dem_to_prob <- function(DEM, len, poly_inputs = list(),
                  export_prob = FALSE, prob_rast_name = NA, cv_err = FALSE) {
   
   # Checks if inputs are file names and loads them in
-  if(is.character(DEM)) {
-    if(!file.exists(DEM)) {
-      stop("Cannot find DEM file")
+  # Checking if inputs are file names, then load them in
+  if(is.character(in_rasts[1])) {
+    temp_rast <- rep(list(), length(in_rasts))
+    for(i in 1:length(in_rasts)) {
+      temp_rast[[i]] <- terra::rast(in_rasts[i])
     }
-    DEM <- terra::rast(DEM)
+    names(temp_rast) <- in_rasts
+    in_rasts <- temp_rast
+  }
+  
+  if(length(poly_inputs) > 0) {
+    if(is.character(poly_inputs[[1]])) {
+      temp_poly <- rep(list(), length(poly_inputs))
+      for(i in 1:length(poly_inputs)) {
+        if(!file.exists(poly_inputs[[i]])) {
+          stop(paste0("Cannot find poly input file:", poly_inputs[i]))
+        }
+        poly_inputs[i] <- terra::vect(poly_inputs[[i]]) 
+      }
+      names(temp_poly) <- poly_inputs
+      poly_inputs <- temp_poly
+    }
   }
   
   if(is.character(train)) {
@@ -348,19 +503,8 @@ dem_to_prob <- function(DEM, len, poly_inputs = list(),
     train <- terra::vect(train)
   }
   
-  if(length(poly_inputs) > 0) {
-    for(i in 1:length(poly_inputs)) {
-      if(is.character(poly_inputs[[i]])) {
-        if(!file.exists(poly_inputs[[i]])) {
-          stop(paste0("Cannot find poly input file:", poly_inputs[i]))
-        }
-        poly_inputs[[i]] <- terra::vect(poly_inputs[[i]]) 
-      }
-    }
-  }
-  
   # Sets up the resolution
-  k <- round(len/res(DEM)[1])
+  k <- round(len/terra::res(DEM)[1])
   if (k %% 2 == 0) {
     k <- k + 1
   }
@@ -523,16 +667,8 @@ surface_met1 <- function(len, metrics = c("grad", "plan", "prof", "dev"),
     stop("Executable Files directory does not exist!")
   }
   
-  # if(!endsWith(dem_dir, ".flt")) {
-  #   r <- terra::rast(dem_dir)
-  #   dem_dir <- paste0(out_dir, "/temp.flt")
-  #   writeRaster(r, dem_dir, overwrite = T)
-  #   print("Created .flt file")
-  # }
-  
   # Prepare inputs
   dem_dir <- normalizePath(dem_dir)
-  # dem_dir <- substr(dem_dir, 1, nchar(dem_dir)-4)
   out_dir <- normalizePath(out_dir)
   if(!endsWith(out_dir, "\\")) {
     out_dir <- paste0(out_dir, "\\")
