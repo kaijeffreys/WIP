@@ -39,12 +39,14 @@ elev3 <- surface_met(r, len = 10, elev_dev = c("twi"))
 
 
 ```{r}
-mod1 <- build_model(in_rasts = elev1, train = pts)
-mod2 <- build_model(in_rasts = c(elev1, elev2, elev3), train = pts)
+mod1 <- build_model(in_rasts = elev1, train = pts, ref_raster = r)
+mod2 <- build_model(in_rasts = c(elev1, elev2, elev3), train = pts,
+                    ref_raster = r)
 mod3 <- build_model(in_rasts = c(elev1, elev2, elev3), train = pts,
-                    model_type = "glm")
+                    model_type = "glm", ref_raster = r)
 mod4 <- build_model(in_rasts = c(elev1, elev2, elev3), train = pts,
-                    model_type = "knn", model_params = list(k = 5))
+                    model_type = "knn", model_params = list(k = 5), 
+                    ref_raster = r)
 ```
 
 ## Get an estimate of the error of the model
@@ -60,10 +62,12 @@ CV_err(in_rasts = c(elev1, elev2, elev3), train = pts,
 # Run the model
 
 ```{r}
-prob1 <- run_model(mod1, elev1)
-prob2 <- run_model(mod2, c(elev1, elev2, elev3))
-prob3 <- run_model(mod3, c(elev1, elev2, elev3), model_type = "glm")
-prob4 <- run_model(mod4, c(elev1, elev2, elev3), model_type = "knn")
+prob1 <- run_model(mod1, elev1, ref_raster = r)
+prob2 <- run_model(mod2, c(elev1, elev2, elev3), ref_raster = r)
+prob3 <- run_model(mod3, c(elev1, elev2, elev3), model_type = "glm",
+                   ref_raster = r)
+prob4 <- run_model(mod4, c(elev1, elev2, elev3), model_type = "knn",
+                   ref_raster = r)
 ```
 
 ## Plot the results of the model
@@ -75,6 +79,11 @@ plot(prob3, main = "Wetlands Probability (Logistic)")
 plot(prob4["WET"],  main = "Wetlands Probability (knn)")
 ```
 
+## Change it from a probability raster to a classification
+
+```{r}
+plot(prob_to_class(prob1), main = "Wetlands Classification", col = c("lightgray", "blue"))
+```
 
 # Another option:
 
