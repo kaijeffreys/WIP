@@ -330,7 +330,8 @@ build_model <- function(in_rasts, poly_inputs = list(), train, ref_raster,
 # Runs the model
 
 run_model <- function(mod, in_rasts = list(), poly_inputs = list(), ref_raster,
-                      model_type = "forest", export = FALSE) {
+                      model_type = "forest", class_rast = FALSE,
+                      export = FALSE) {
   
   # Checking if inputs are file names, then load them in
   if(is.character(in_rasts[1])) {
@@ -380,72 +381,36 @@ run_model <- function(mod, in_rasts = list(), poly_inputs = list(), ref_raster,
   
   # Run the model
   print("Running model")
-  if(model_type == "glm") {
-    prob_rast <- terra::predict(input_raster, mod, na.rm = T, type = "response")
+  
+  if(class_rast) {
+    if(isTRUE(mod$call[[1]] == "glm")) {
+      output <- terra::predict(input_raster, mod, na.rm = T,
+                               type = "response")
+      vals <- terra::values(output)
+      vals <- ifelse(vals > 0.5, "WET", "UPL")
+      terra::values(output) <- vals
+      
+    } else {
+      output <- terra::predict(input_raster, mod, na.rm = T)
+    }
+    
   } else {
-    prob_rast <- terra::predict(input_raster, mod, na.rm = T, type = "prob")
-  }
+    if(isTRUE(mod$call[[1]] == "glm")) {
+      output <- terra::predict(input_raster, mod, na.rm = T,
+                               type = "response")
+    } else {
+      output <- terra::predict(input_raster, mod, na.rm = T, type = "prob")
+    }
+  }  
   
   if(export) {
-    for(i in 1:length(prob_rast)) {
-      file_name <- paste0(names(run_fort)[i], "prob.tif")
-      terra::writeRaster(prob_rast[[i]], filename = file_name)
+    for(i in 1:length(output)) {
+      file_name <- paste0(names(input_raster)[i], "prob.tif")
+      terra::writeRaster(output[[i]], filename = file_name)
     }
   }
   
   print("Done!")
-  return(prob_rast)
-}
-
-
-# -----------------------------------------------------------------------------
-# Turns probability raster to classification 
-
-prob_to_class <- function(r) {
-  if(terra::nlyr(r) < 2) {
-    stop("Raster needs to be of two or more layers")
-  }
-  # Extract the values from the input raster into a matrix
-  vals <- terra::values(r)
-  
-  # Initialize the outputs
-  output <- r[[1]]
-  terra::values(output) <- NA
-  out_vals <- c()
-  n_iter <- nrow(vals)
-
-  # Progress bar so user can see where the 
-  pb <- txtProgressBar(min = 0,
-                       max = n_iter,
-                       style = 3,
-                       width = 50,
-                       char = "=")
-  # Run through the set of probability rasters, checks to see which has the 
-  # highest probability, then returns that class
-  for(i in 1:n_iter) {
-    cl <- NA
-    if(!is.na(vals[i,1])) {
-      max_prob <- 0
-      for(j in 1:ncol(vals)) {
-        num <- vals[i,j]
-        if(isTRUE(max_prob < num)) {
-          max_prob <- num
-          cl <- colnames(vals)[j]
-        }
-      }
-    }
-    
-    out_vals[i] <- cl
-    
-    setTxtProgressBar(pb, i)
-  }
-  
-  # Sets the values to the
-  terra::values(output) <- out_vals
-  
-  close(pb)
-  
-  # Returns the output raster
   return(output)
 }
 
