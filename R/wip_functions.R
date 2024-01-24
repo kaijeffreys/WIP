@@ -102,10 +102,10 @@ surface_met <- function(DEM, len, export = FALSE,
   }
   
   if("twi" %in% elev_dev) {
-    topidx <- topmodel::topidx(terra::as.matrix(DEM), res = res(DEM)[1])
+    topidx <- topmodel::topidx(terra::as.matrix(DEM), res = terra::res(DEM)[1])
     a <- terra::setValues(DEM, topidx$area)
     twi <- a / tan(terra::terrain(DEM, unit = "radians"))
-    values(twi) <- ifelse(values(twi) < 0, 0, values(twi))
+    terra::values(twi) <- ifelse(terra::values(twi) < 0, 0, terra::values(twi))
     twi <- terra::focal(twi, w = k, mean, na.rm = T, na.policy = "omit")
     
     in_rast <- c(in_rast, twi)
@@ -150,7 +150,8 @@ build_train_pts <- function(region_poly, wet_poly, multi_class = FALSE,
   }
   
   # Filters the wetland polygons to only include wanted types
-  wet_poly <- wet_poly[wet_poly$WETLAND_TY %in% wet_types]
+  names(wet_poly) <- "type"
+  wet_poly <- wet_poly[wet_poly$type %in% wet_types]
   if(length(wet_poly) == 0) {
     stop("No wetlands to sample!")
   }
@@ -163,55 +164,74 @@ build_train_pts <- function(region_poly, wet_poly, multi_class = FALSE,
   if(multi_class) {
     # Initialize parameters
     train_crds <- NA
-    train_atts <- NA
+    train_atts <- c()
+    wet_samp <- sample_points[1]
+    up_samp <- sample_points[2]
     
     # Sample points for each wetland class
     for(i in 1:length(wet_types)) {
-      temp_poly <- wet_poly[wet_poly$WETLAND_TY == wet_types[i]]
+      temp_poly <- wet_poly[wet_poly$type == wet_types[i]]
       wet_crds <- NA
-
-      # Sampling points for each polygon that the wetland class is in
-      for(j in 1:length(temp_poly)) {
-        samp_wet_pts <- terra::spatSample(temp_poly, 
-                                          sample_points[1]/length(temp_poly))
-        coords <- terra::crds(samp_wet_pts)
-        wet_crds <- rbind(wet_crds, coords)
-      }
+      samp_wet_pts <- terra::spatSample(temp_poly, wet_samp)
+      coords <- terra::crds(samp_wet_pts)
+      wet_crds <- rbind(wet_crds, coords)
       
+      wet_crds <- wet_crds[-1,]
       train_crds <- rbind(train_crds, wet_crds)
-      train_atts <- rbind(train_atts, rep(wet_types[i], sample_points))
+      train_atts <- c(train_atts, rep(wet_types[i], wet_samp))
     }
+    train_crds <- train_crds[-1,]
     
     # Sample points from non-wetland areas
     up_poly <- terra::erase(region_poly, wet_poly)
-    samp_up_pts <- terra::spatSample(up_poly, sample_points[2])
+    samp_up_pts <- terra::spatSample(up_poly, up_samp)
     up_crds <- terra::crds(samp_up_pts)
     
     # Create the points
     train_crds <- rbind(train_crds, up_crds)
-    train_atts <- rbind(train_atts, rep("UPL", sample_points[2]))
+    train_atts <- c(train_atts, rep("UPL", up_samp))
     train_atts <- data.frame(class = factor(train_atts))
     pts <- terra::vect(train_crds, atts = train_atts,
                        crs = terra::crs(region_poly))
-      
   } else {
     # Sample the wetland points
+    wet_samp <- sample_points[1]
+    up_samp <- sample_points[2]
     wet_crds <- NA
+    
+    num_points <- c()
+    total_area <- sum(terra::expanse(wet_poly))
     for(i in 1:length(wet_poly)) {
-      samp_wet_pts <- terra::spatSample(wet_poly, 
-                                        sample_points[1]/length(wet_poly))
+      prop_area <- terra::expanse(wet_poly[i]) / total_area
+      num_points[i] <- round(prop_area * wet_samp)
+      samp_wet_pts <- terra::spatSample(wet_poly[i],
+                                        num_points[i])
       coords <- terra::crds(samp_wet_pts)
       wet_crds <- rbind(wet_crds, coords)
+      num_coords <- nrow(coords)
+      while(num_coords < num_points[i]) {
+        new_points <- terra::spatSample(wet_poly[i],
+                                        num_points[i]-(num_coords))
+        new_crds <- terra::crds(new_points)
+        wet_crds <- rbind(wet_crds, new_crds)
+        num_coords <- num_coords + nrow(new_crds)
+      }
     }
+    
+    if(sum(num_points) != wet_samp) {
+      stop("Please try another sample size")
+    }
+    wet_crds <- wet_crds[-1,]
+    
     # Sample points from non-wetland areas
     up_poly <- terra::erase(region_poly, wet_poly)
-    samp_up_pts <- terra::spatSample(up_poly, sample_points[2])
+    samp_up_pts <- terra::spatSample(up_poly, up_samp)
     up_crds <- terra::crds(samp_up_pts)
     
     # Create the points
     train_crds <- rbind(wet_crds, up_crds)
-    train_atts <- data.frame(class = factor(c(rep("WET", sample_points[1]),
-                                              rep("UPL", sample_points[2]))))
+    train_atts <- data.frame(class = factor(c(rep("WET", wet_samp),
+                                              rep("UPL", up_samp))))
     pts <- terra::vect(train_crds, atts = train_atts,
                        crs = terra::crs(region_poly))
   }
@@ -229,7 +249,7 @@ build_train_pts <- function(region_poly, wet_poly, multi_class = FALSE,
 
 build_model <- function(in_rasts, poly_inputs = list(), train, ref_raster,
                         model_type = "forest", model_params = list(ntree = 200),
-                        class_field_name = "Class") {
+                        class_field_name = "class") {
   
   # Checking if input rasters are file names, then load them in
   if(is.character(in_rasts[1])) {
@@ -257,7 +277,7 @@ build_model <- function(in_rasts, poly_inputs = list(), train, ref_raster,
       poly_inputs <- temp_poly
     }
     
-    #
+    # Rasterize polygon inputs
     for(i in 1:length(poly_inputs)) {
       vr_name <- names(poly_inputs)[i]
       temp_rast <- terra::rasterize(poly_inputs[i], ref_raster, field = vr_name)
@@ -394,12 +414,14 @@ prob_to_class <- function(r) {
   out_vals <- c()
   n_iter <- nrow(vals)
 
+  # Progress bar so user can see where the 
   pb <- txtProgressBar(min = 0,
                        max = n_iter,
                        style = 3,
                        width = 50,
                        char = "=")
-  # Run thro
+  # Run through the set of probability rasters, checks to see which has the 
+  # highest probability, then returns that class
   for(i in 1:n_iter) {
     cl <- NA
     if(!is.na(vals[i,1])) {
@@ -521,6 +543,16 @@ CV_err <- function(in_rasts, poly_inputs = list(), ref_raster,
   print(paste0("Test Error Estimate: ", round(mean_err * 100, 1), "%"))
   print(paste0("95% Confidence Interval: [", ci_err[1], ", ", ci_err[2], "]"))
 }
+
+# -----------------------------------------------------------------------------
+# Tests model against a polygon of wetlands
+
+wet_test <- function(r_class, test, non_wet_class = "Upland") {
+  names()
+  rast_test <- terra::rasterize(test)
+  
+}
+
 
 # -----------------------------------------------------------------------------
 # Attempts to do whole WIP tool without fortran
