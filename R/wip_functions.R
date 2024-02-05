@@ -134,7 +134,9 @@ build_train_pts <- function(region_poly, wet_poly, multi_class = FALSE,
                                           "Riverine", "Lake",
                                           "Estuarine and Marine Deepwater",
                                           "Other"),
-                            sample_points = c(50, 150), export = FALSE) {
+                            wet_field = "WETLAND_TY",
+                            sample_points = c(50, 150), 
+                            export = FALSE) {
   
   # Loads in polygons if input is a file name
   if(is.character(wet_poly[[1]])) {
@@ -150,8 +152,7 @@ build_train_pts <- function(region_poly, wet_poly, multi_class = FALSE,
   }
   
   # Filters the wetland polygons to only include wanted types
-  names(wet_poly) <- "type"
-  wet_poly <- wet_poly[wet_poly$type %in% wet_types]
+  wet_poly <- wet_poly[wet_poly$WETLAND_TY %in% wet_types]
   if(length(wet_poly) == 0) {
     stop("No wetlands to sample!")
   }
@@ -163,24 +164,33 @@ build_train_pts <- function(region_poly, wet_poly, multi_class = FALSE,
   # Checks if output is supposed to be more than two classes before proceeding
   if(multi_class) {
     # Initialize parameters
-    train_crds <- NA
+    train_crds <- NULL
     train_atts <- c()
     wet_samp <- sample_points[1]
     up_samp <- sample_points[2]
     
     # Sample points for each wetland class
     for(i in 1:length(wet_types)) {
-      temp_poly <- wet_poly[wet_poly$type == wet_types[i]]
-      wet_crds <- NA
+      temp_poly <- wet_poly[wet_poly$WETLAND_TY == wet_types[i]]
+      wet_crds <- NULL
       samp_wet_pts <- terra::spatSample(temp_poly, wet_samp)
       coords <- terra::crds(samp_wet_pts)
       wet_crds <- rbind(wet_crds, coords)
       
-      wet_crds <- wet_crds[-1,]
+      num_coords <- nrow(coords)
+      while(num_coords < wet_samp) {
+        new_points <- terra::spatSample(temp_poly,
+                                        wet_samp-(num_coords))
+        new_crds <- terra::crds(new_points)
+        wet_crds <- rbind(wet_crds, new_crds)
+        num_coords <- num_coords + nrow(new_crds)
+      }
+      
       train_crds <- rbind(train_crds, wet_crds)
       train_atts <- c(train_atts, rep(wet_types[i], wet_samp))
     }
-    train_crds <- train_crds[-1,]
+    print(nrow(train_crds))
+    print(length(train_atts))
     
     # Sample points from non-wetland areas
     up_poly <- terra::erase(region_poly, wet_poly)
@@ -197,31 +207,32 @@ build_train_pts <- function(region_poly, wet_poly, multi_class = FALSE,
     # Sample the wetland points
     wet_samp <- sample_points[1]
     up_samp <- sample_points[2]
-    wet_crds <- NA
+    wet_crds <- NULL
     
     num_points <- c()
     total_area <- sum(terra::expanse(wet_poly))
-    for(i in 1:length(wet_poly)) {
-      prop_area <- terra::expanse(wet_poly[i]) / total_area
+    for(i in 1:length(wet_types)) {
+      temp_poly <- wet_poly[wet_poly$WETLAND_TY == wet_types[i]]
+      prop_area <- sum(terra::expanse(temp_poly)) / total_area
       num_points[i] <- round(prop_area * wet_samp)
-      samp_wet_pts <- terra::spatSample(wet_poly[i],
-                                        num_points[i])
-      coords <- terra::crds(samp_wet_pts)
-      wet_crds <- rbind(wet_crds, coords)
-      num_coords <- nrow(coords)
-      while(num_coords < num_points[i]) {
-        new_points <- terra::spatSample(wet_poly[i],
-                                        num_points[i]-(num_coords))
-        new_crds <- terra::crds(new_points)
-        wet_crds <- rbind(wet_crds, new_crds)
-        num_coords <- num_coords + nrow(new_crds)
+      if(num_points[i] != 0) {
+        samp_wet_pts <- terra::spatSample(temp_poly,
+                                          num_points[i])
+        coords <- terra::crds(samp_wet_pts)
+        wet_crds <- rbind(wet_crds, coords)
+        num_coords <- nrow(coords)
+        while(num_coords < num_points[i]) {
+          new_points <- terra::spatSample(temp_poly,
+                                          num_points[i]-(num_coords))
+          new_crds <- terra::crds(new_points)
+          wet_crds <- rbind(wet_crds, new_crds)
+          num_coords <- num_coords + nrow(new_crds)
+        }
       }
     }
-    
     if(sum(num_points) != wet_samp) {
       stop("Please try another sample size")
     }
-    wet_crds <- wet_crds[-1,]
     
     # Sample points from non-wetland areas
     up_poly <- terra::erase(region_poly, wet_poly)
